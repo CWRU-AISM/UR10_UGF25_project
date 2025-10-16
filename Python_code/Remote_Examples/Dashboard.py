@@ -6,13 +6,13 @@ import sys
 import logging
 
 # Enter robot IP address here.
-host = '192.168.208.128'
+host = '192.168.0.2'
 
 
 class Dashboard:
     def __init__(self, robotIP):
         self.robotIP = robotIP
-        self.port = 29999
+        self.port = 30000
         self.timeout = 5
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         logging.getLogger().setLevel(logging.INFO)
