@@ -6,7 +6,7 @@ import sys
 import logging
 
 # Enter robot IP address here.
-host = '192.168.0.2'
+host = '192.168.1.101'
 
 
 class Dashboard:

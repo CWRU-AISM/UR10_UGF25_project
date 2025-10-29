@@ -18,7 +18,7 @@ from datetime import datetime
 @dataclass
 class URConfig:
     """Configuration for UR robot connection"""
-    robot_ip: str = "192.168.1.100"  # Placeholder
+    robot_ip: str = "192.168.1.101"  # Placeholder
     tcp_port: int = 30002           # Primary interface port
     dashboard_port: int = 29999     # Dashboard server port
     rtde_port: int = 30004          # Real-time data exchange port
@@ -372,10 +372,9 @@ class SafeURRobot(URRobot):
 
 def demo_basic_movement():
     """Demo: Basic movement patterns"""
-    print("\n=== Basic Movement Demo ===")
     
     # Initialize robot
-    config = URConfig(robot_ip="192.168.1.100")  # Update IP
+    config = URConfig(robot_ip="192.168.1.101")  # Update IP
     robot = SafeURRobot(config)
     
     if not robot.connect():
@@ -418,7 +417,7 @@ def demo_pick_and_place():
     """Demo: Simple pick and place operation"""
     print("\n=== Pick and Place Demo ===")
     
-    config = URConfig(robot_ip="192.168.1.100")  # Update IP
+    config = URConfig(robot_ip="192.168.1.101")  
     robot = SafeURRobot(config)
     
     if not robot.connect():

@@ -38,6 +38,8 @@ srv/_*.py
 qtcreator-*
 *.user
 
+/*mp4
+/*.JPEG
 /planning/cfg
 /planning/docs
 /planning/src

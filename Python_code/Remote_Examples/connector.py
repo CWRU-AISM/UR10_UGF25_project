@@ -29,7 +29,7 @@ import xml.etree.ElementTree as ET
 import csv
 sys.path.append('..')
 
-ROBOT_HOST = '192.168.0.2'
+ROBOT_HOST = '192.168.1.101'
 # ROBOT_HOST = '192.168.56.101'
 ROBOT_PORT = 30004
 config_filename = 'rtdeIO.xml'
