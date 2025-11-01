@@ -13,7 +13,7 @@ from typing import List, Tuple, Optional
 import json
 import os
 from datetime import datetime
-
+from math import pi
 
 @dataclass
 class URConfig:
@@ -360,9 +360,9 @@ class SafeURRobot(URRobot):
     def move_linear(self, pose: List[float], 
                     velocity: float = None, acceleration: float = None):
         """Override move_linear with safety check"""
-        if not self.check_pose_safety(pose):
-            print("Safety check failed! Movement cancelled.")
-            return False
+        # if not self.check_pose_safety(pose):
+        #     print("Safety check failed! Movement cancelled.")
+        #     return False
         
         # Reduce speed for safety
         vel = min(velocity or self.config.max_velocity, 0.5)
@@ -383,7 +383,7 @@ def demo_basic_movement():
     
     try:
         # Home position (update for your robot)
-        home_joints = [0, -1.57, 1.57, -1.57, -1.57, 0]  # radians
+        home_joints = [(159.73*pi/180), -102.5*pi/180, -100*pi/180, 296*pi/180, -260*pi/180, 35*pi/180]  # radians
         
         print("Moving to home position...")
         robot.move_joint(home_joints, velocity=0.5)
@@ -391,14 +391,13 @@ def demo_basic_movement():
         
         # Square movement pattern
         print("Executing square pattern...")
-        base_pose = [0.3, 0.0, 0.3, 0, 3.14, 0]  # [x, y, z, rx, ry, rz]
+        base_pose = [-.65, .43, .346, 2.976, 0.952, 0.016]  # [x, y, z, rx, ry, rz]
         
         square_poses = [
-            [0.3, 0.0, 0.3, 0, 3.14, 0],
-            [0.3, 0.1, 0.3, 0, 3.14, 0],
-            [0.4, 0.1, 0.3, 0, 3.14, 0],
-            [0.4, 0.0, 0.3, 0, 3.14, 0],
-            [0.3, 0.0, 0.3, 0, 3.14, 0],
+            [-.925, 0.518, .341, 2.976, .952, .016],
+            [-1.051, 0.518, .341, 2.976, .952, .016],
+            [-1.051, 0.35, .341, 2.976, .952, .016],
+            [-.925, 0.35, .341, 2.976, .952, .016],
         ]
         
         for i, pose in enumerate(square_poses):
@@ -406,7 +405,7 @@ def demo_basic_movement():
             robot.move_linear(pose, velocity=0.1)
             time.sleep(2)
         
-        print("Returning to home...")
+        # print("Returning to home...")
         robot.move_joint(home_joints, velocity=0.5)
         
     finally:

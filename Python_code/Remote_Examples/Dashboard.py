@@ -12,7 +12,7 @@ host = '192.168.1.101'
 class Dashboard:
     def __init__(self, robotIP):
         self.robotIP = robotIP
-        self.port = 30000
+        self.port = 29999
         self.timeout = 5
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         logging.getLogger().setLevel(logging.INFO)
