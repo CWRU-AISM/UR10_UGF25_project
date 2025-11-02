@@ -1,0 +1,62 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.pylint.d/
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ROS2 build artifacts
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Data files (can be large)
+*.bag
+*.ply
+*.pcd
+*.png
+*.jpg
+*.jpeg
+*.mp4
+*.avi
+
+# Documentation
+docs/_build/
+*.pdf
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+tmp/
+temp/

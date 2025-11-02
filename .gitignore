@@ -20,7 +20,7 @@ devel_isolated/
 *.cfgc
 /cfg/cpp/
 /cfg/*.py
-
+/venv
 # Ignore generated docs
 *.dox
 *.wikidoc
@@ -37,7 +37,7 @@ srv/_*.py
 *.pyc
 qtcreator-*
 *.user
-
+*.png
 *.mp4
 *.JPEG
 /planning/cfg

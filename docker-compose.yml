@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  # Main development container (CV and Python dependencies)
+  ur10e-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    image: ur10e-dev:latest
+    container_name: ur10e_development
+    volumes:
+      - ./src:/workspace/src
+      - ./examples:/workspace/examples
+      - ./data:/workspace/data
+      - ./logs:/workspace/logs
+      # For ROS2 users, mount the ros2_ws
+      - ./ros2_ws:/workspace/ros2_ws
+      # X11 forwarding for GUI
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      # Python path
+      - PYTHONPATH=/workspace/src:${PYTHONPATH}
+      # NVIDIA GPU support
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+    network_mode: host
+    privileged: true
+    stdin_open: true
+    tty: true
+    devices:
+      # USB devices for cameras
+      - /dev/bus/usb:/dev/bus/usb
+      # Azure Kinect
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
+    ports:
+      - "8888:8888"  # Jupyter notebook
+    # GPU support (requires nvidia-docker2 or Docker with GPU support)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Lightweight CV-only container (minimal, no ROS2)
+  cv-minimal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: base
+    image: ur10e-cv-minimal:latest
+    container_name: ur10e_cv_minimal
+    volumes:
+      - ./src:/workspace/src
+      - ./data:/workspace/data
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    environment:
+      - DISPLAY=${DISPLAY}
+      - PYTHONPATH=/workspace/src:${PYTHONPATH}
+      # NVIDIA GPU support
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+    network_mode: host
+    privileged: true
+    stdin_open: true
+    tty: true
+    # GPU support (requires nvidia-docker2 or Docker with GPU support)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: /bin/bash

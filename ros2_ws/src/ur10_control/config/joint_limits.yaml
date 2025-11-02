@@ -1,0 +1,57 @@
+# Joint limits configuration for UR10e robot
+# Students can modify these limits for safety or specific applications
+
+joint_limits:
+  # Shoulder Pan Joint
+  shoulder_pan_joint:
+    has_velocity_limits: true
+    max_velocity: 2.16  # rad/s
+    has_acceleration_limits: true
+    max_acceleration: 3.15  # rad/s^2
+    has_jerk_limits: false
+    max_jerk: 0.0
+
+  # Shoulder Lift Joint
+  shoulder_lift_joint:
+    has_velocity_limits: true
+    max_velocity: 2.16  # rad/s
+    has_acceleration_limits: true
+    max_acceleration: 3.15  # rad/s^2
+    has_jerk_limits: false
+    max_jerk: 0.0
+
+  # Elbow Joint
+  elbow_joint:
+    has_velocity_limits: true
+    max_velocity: 3.15  # rad/s
+    has_acceleration_limits: true
+    max_acceleration: 3.15  # rad/s^2
+    has_jerk_limits: false
+    max_jerk: 0.0
+
+  # Wrist 1 Joint
+  wrist_1_joint:
+    has_velocity_limits: true
+    max_velocity: 3.2  # rad/s
+    has_acceleration_limits: true
+    max_acceleration: 3.15  # rad/s^2
+    has_jerk_limits: false
+    max_jerk: 0.0
+
+  # Wrist 2 Joint
+  wrist_2_joint:
+    has_velocity_limits: true
+    max_velocity: 3.2  # rad/s
+    has_acceleration_limits: true
+    max_acceleration: 3.15  # rad/s^2
+    has_jerk_limits: false
+    max_jerk: 0.0
+
+  # Wrist 3 Joint
+  wrist_3_joint:
+    has_velocity_limits: true
+    max_velocity: 3.2  # rad/s
+    has_acceleration_limits: true
+    max_acceleration: 3.15  # rad/s^2
+    has_jerk_limits: false
+    max_jerk: 0.0
