@@ -14,8 +14,7 @@ import json
 import os
 from datetime import datetime
 from math import pi
-from pyrobotiqgripper import RobotiqGripper
-ROBOTIQ_AVAILABLE = True
+from pathlib import Path
 
 @dataclass
 class URConfig:
@@ -43,13 +42,11 @@ class URConfig:
 class URRobot:
     """Main class for UR robot control via TCP/IP"""
 
-    def __init__(self, config: URConfig = None, gripper_port: str = None):
+    def __init__(self, config: URConfig = None):
         """Initialize UR robot connection
 
         Args:
             config: URConfig object with robot settings
-            gripper_port: Serial port for Robotiq gripper (e.g., 'COM3' or '/dev/ttyUSB0')
-                         If None, will auto-detect
         """
         self.config = config or URConfig()
         self.socket = None
@@ -61,16 +58,61 @@ class URRobot:
         self.current_digital_outputs = [False] * 10
         self.gripper_object_detected = False
 
-        # Robotiq Gripper via pyRobotiqGripper
-        self.gripper = None
-        self.gripper_port = gripper_port
-        self.gripper_connected = False
+        # Robotiq Gripper via URCap functions (loaded from grippy.script)
+        self.gripper_script_header = None
+        self.gripper_initialized = False
 
         # Thread for monitoring robot state
         self.monitor_thread = None
         self.monitoring = False
         self._state_lock = threading.Lock()
-        
+
+        # Load Robotiq gripper script functions
+        self._load_gripper_functions()
+
+    def _load_gripper_functions(self):
+        """Load Robotiq gripper function definitions from grippy.script"""
+        try:
+            script_path = Path(__file__).parent / "grippy.script"
+            if script_path.exists():
+                with open(script_path, 'r', encoding='utf-8') as f:
+                    full_script = f.read()
+
+                # Extract only the Robotiq Gripper functions
+                # Find the start of gripper functions
+                start_marker = "# begin: URCap Installation Node"
+                gripper_marker = "#   Source: Robotiq_Grippers"
+                gripper_type_marker = "#   Type: Gripper"
+
+                lines = full_script.split('\n')
+                gripper_start = None
+                gripper_end = None
+
+                for i, line in enumerate(lines):
+                    if gripper_type_marker in line:
+                        # Back up to find the begin marker
+                        for j in range(i, max(0, i-10), -1):
+                            if start_marker in lines[j] and gripper_marker in lines[j+1]:
+                                gripper_start = j
+                                break
+                    if gripper_start and "# end: URCap Installation Node" in line and i > gripper_start + 10:
+                        gripper_end = i + 1
+                        break
+
+                if gripper_start and gripper_end:
+                    self.gripper_script_header = '\n'.join(lines[gripper_start:gripper_end])
+                    print("Loaded Robotiq gripper functions")
+                else:
+                    print("Warning: Could not find Robotiq gripper functions in grippy.script")
+                    self.gripper_script_header = None
+            else:
+                print(f"Warning: grippy.script not found at {script_path}")
+                self.gripper_script_header = None
+
+        except Exception as e:
+            print(f"Error loading gripper functions: {e}")
+            self.gripper_script_header = None
+
     def connect(self, activate_gripper=True, power_on_robot=False):
         """Establish connection to UR robot
 
@@ -104,28 +146,19 @@ class URRobot:
                 self.release_brakes()
                 time.sleep(2)
 
-            # Connect to Robotiq gripper via serial/Modbus
-            if ROBOTIQ_AVAILABLE and activate_gripper:
+            # Activate Robotiq gripper using URCap functions
+            if activate_gripper and self.gripper_script_header:
                 try:
-                    # print("Connecting to Robotiq gripper...")
-                    # if self.gripper_port:
-                    #     self.gripper = RobotiqGripper(port=self.gripper_port)
-                    # else:
-                    #     # Auto-detect serial port
-                    self.gripper = RobotiqGripper()
-
-                    print("Activating gripper (gripper will fully open and close)...")
-                    self.gripper.activate()
-                    self.gripper_connected = True
+                    print("Activating Robotiq gripper via URCap...")
+                    self.rq_activate_gripper()
+                    self.gripper_initialized = True
                     print("Gripper activated and ready!")
-
                 except Exception as e:
-                    print(f"Warning: Gripper connection failed: {e}")
-                    print("Gripper commands will not be available")
-                    self.gripper = None
-                    self.gripper_connected = False
-            elif not ROBOTIQ_AVAILABLE:
-                print("pyRobotiqGripper not installed - gripper control unavailable")
+                    print(f"Warning: Gripper activation failed: {e}")
+                    print("Try activating manually from teach pendant")
+                    self.gripper_initialized = False
+            elif not self.gripper_script_header:
+                print("Warning: Gripper functions not loaded from grippy.script")
 
             return True
 
@@ -137,22 +170,13 @@ class URRobot:
         """Close connection to UR robot"""
         self.stop_monitoring()
 
-        # Disconnect gripper
-        if self.gripper and self.gripper_connected:
-            try:
-                print("Disconnecting gripper...")
-                # Note: pyRobotiqGripper doesn't have explicit disconnect
-                self.gripper = None
-                self.gripper_connected = False
-            except Exception as e:
-                print(f"Error disconnecting gripper: {e}")
-
         if self.socket:
             self.socket.close()
         if self.dashboard_socket:
             self.dashboard_socket.close()
 
         self.is_connected = False
+        self.gripper_initialized = False
         print("Disconnected from robot")
     
     def send_script(self, script: str):
@@ -305,7 +329,7 @@ class URRobot:
         
         return self.send_script(script)
     
-    # Gripper: Robotiq 2F85 via pyRobotiqGripper (Modbus/Serial)
+    # Gripper: Robotiq 2F85 via URCap functions
 
     def set_digital_output(self, pin: int, value: bool):
         """Set digital output pin"""
@@ -313,94 +337,130 @@ class URRobot:
         script = f"set_digital_out({pin}, {val})"
         return self.send_script(script)
 
-    def rq_activate_gripper(self):
-        """Activate and initialize Robotiq gripper
-        This is now handled in connect() method with pyRobotiqGripper
-        """
-        if not self.gripper_connected:
-            print("Gripper not connected via pyRobotiqGripper")
-            return False
-
-        try:
-            print("Activating gripper (will fully open and close)...")
-            self.gripper.activate()
-            print("Gripper activated!")
-            return True
-        except Exception as e:
-            print(f"Gripper activation failed: {e}")
-            return False
-
-    def rq_close_gripper(self, force: int = 100, speed: int = 100, position: int = 255):
-        """Close Robotiq gripper using pyRobotiqGripper
+    def _send_gripper_script(self, commands: str):
+        """Send gripper commands with URCap function definitions
 
         Args:
-            force: Grip force 0-255 (default 100) - Note: pyRobotiqGripper handles this differently
-            speed: Closing speed 0-255 (default 100) - Note: pyRobotiqGripper handles this differently
-            position: Target position 0-255 (0=open, 255=closed, default 255)
+            commands: URScript commands to execute (e.g., 'rq_open_and_wait()')
         """
-        if not self.gripper_connected:
-            print("Gripper not connected")
+        if not self.gripper_script_header:
+            print("Error: Gripper functions not loaded")
             return False
 
-        try:
-            # pyRobotiqGripper uses goTo() method with position in 0-255
-            self.gripper.goTo(position)
-            return True
-        except Exception as e:
-            print(f"Gripper close failed: {e}")
+        # Build complete script with header + commands
+        full_script = f"""def gripper_program():
+{self.gripper_script_header}
+
+{commands}
+end
+gripper_program()
+"""
+        return self.send_script(full_script)
+
+    def rq_activate_gripper(self):
+        """Activate and initialize Robotiq gripper using URCap functions"""
+        if not self.gripper_script_header:
+            print("Error: Gripper functions not loaded from grippy.script")
             return False
+
+        commands = """
+    # Reset and activate all grippers
+    rq_activate_all_grippers(True)
+"""
+        result = self._send_gripper_script(commands)
+        time.sleep(3)  # Wait for activation
+        return result
+
+    def rq_close_gripper(self, force: int = 100, speed: int = 100):
+        """Close Robotiq gripper using URCap functions
+
+        Args:
+            force: Grip force 0-100% (default 100)
+            speed: Closing speed 0-100% (default 100)
+        """
+        if not self.gripper_initialized:
+            print("Warning: Gripper not initialized")
+
+        commands = f"""
+    # Set force and speed
+    rq_set_force_norm({force}, "1")
+    rq_set_speed_norm({speed}, "1")
+
+    # Close and wait
+    rq_close_and_wait("1")
+"""
+        return self._send_gripper_script(commands)
 
     def rq_open_gripper(self, speed: int = 100):
-        """Open Robotiq gripper using pyRobotiqGripper
+        """Open Robotiq gripper using URCap functions
 
         Args:
-            speed: Opening speed 0-255 (default 100) - Note: pyRobotiqGripper may not support this
+            speed: Opening speed 0-100% (default 100)
         """
-        if not self.gripper_connected:
-            print("Gripper not connected")
-            return False
+        if not self.gripper_initialized:
+            print("Warning: Gripper not initialized")
 
-        try:
-            self.gripper.open()
-            return True
-        except Exception as e:
-            print(f"Gripper open failed: {e}")
-            return False
+        commands = f"""
+    # Set speed
+    rq_set_speed_norm({speed}, "1")
+
+    # Open and wait
+    rq_open_and_wait("1")
+"""
+        return self._send_gripper_script(commands)
+
+    def rq_move_gripper(self, position: int, speed: int = 100, force: int = 100):
+        """Move gripper to specific position
+
+        Args:
+            position: Position 0-100% (0=open, 100=closed)
+            speed: Movement speed 0-100% (default 100)
+            force: Grip force 0-100% (default 100)
+        """
+        if not self.gripper_initialized:
+            print("Warning: Gripper not initialized")
+
+        commands = f"""
+    # Set parameters
+    rq_set_force_norm({force}, "1")
+    rq_set_speed_norm({speed}, "1")
+
+    # Move to position and wait
+    rq_move_and_wait_norm({position}, "1")
+"""
+        return self._send_gripper_script(commands)
 
     def rq_check_object_detected(self) -> bool:
         """Check if Robotiq gripper has detected an object
         Returns True if object detected (gripper stopped before fully closed)
-
-        Note: This may not be directly supported by pyRobotiqGripper
-        You can check position to infer if object was gripped
         """
-        if not self.gripper_connected:
-            print("Gripper not connected")
+        if not self.gripper_initialized:
+            print("Warning: Gripper not initialized")
             return False
 
-        try:
-            # Check current position - if it's not fully closed after closing, object detected
-            position = self.gripper.getPosition()
-            # If position is between open (0) and closed (255), likely gripping something
-            if 10 < position < 245:
-                return True
-            return False
-        except Exception as e:
-            print(f"Object detection check failed: {e}")
-            return False
+        # Use digital output to read gripper status
+        commands = """
+    # Check if object is detected and set digital output
+    detected = rq_is_object_detected("1")
+    set_standard_digital_out(8, detected)
+    sleep(0.1)
+"""
+        self._send_gripper_script(commands)
+        time.sleep(0.5)
 
-    def get_gripper_position(self) -> Optional[int]:
-        """Get current gripper position (0-255, 0=fully open, 255=fully closed)
+        # Read the digital output
+        with self._state_lock:
+            return self.current_digital_outputs[8]
+
+    def get_gripper_position(self) -> Optional[float]:
+        """Get current gripper position (0-100%, 0=fully open, 100=fully closed)
         Returns None if unable to read position
-        """
-        if not self.gripper_connected:
-            return None
 
-        try:
-            return self.gripper.getPosition()
-        except Exception as e:
-            print(f"Failed to get gripper position: {e}")
-            return None
+        Note: This requires reading from robot state, not directly available
+        """
+        # This would require more complex implementation with RTDE or register reads
+        print("Warning: get_gripper_position not fully implemented")
+        return None
 
     def show_popup(self, message: str, warning: bool = False):
         """Show popup message on robot pendant
@@ -416,29 +476,20 @@ class URRobot:
 
     # Convenience methods with default parameters
     def close_gripper(self):
-        """Close gripper fully (position 255)"""
-        return self.rq_close_gripper(position=255)
+        """Close gripper fully"""
+        return self.rq_close_gripper()
 
     def open_gripper(self):
-        """Open gripper fully (position 0)"""
+        """Open gripper fully"""
         return self.rq_open_gripper()
 
     def gripper_move_to(self, position: int):
         """Move gripper to specific position
 
         Args:
-            position: Position 0-255 (0=fully open, 255=fully closed)
+            position: Position 0-100% (0=fully open, 100=fully closed)
         """
-        if not self.gripper_connected:
-            print("Gripper not connected")
-            return False
-
-        try:
-            self.gripper.goTo(position)
-            return True
-        except Exception as e:
-            print(f"Gripper move failed: {e}")
-            return False
+        return self.rq_move_gripper(position)
     
     # State Monitoring
     
@@ -886,14 +937,12 @@ def demo_trajectory_execution():
         print("Executing spinning top motion...")
         num_points = 16
         radius = 0.06
-        tilt_angle = 0.4  # Tilt inward toward center (radians)
+        blend_radius = 0.01  # Blend radius for smooth motion
 
-        # Build URScript for smooth blended circular motion with inward tilt and rotation
+        # Build URScript for smooth blended circular motion
+        # Keep EE pointing down, rotate around tool axis (wrist 3)
         script = """
 def spinning_top():
-    # Blend radius for smooth continuous motion
-    blend_radius = 0.01
-
     # Starting position
     movej(get_actual_joint_positions(), a=1.2, v=0.5)
     """
@@ -901,31 +950,28 @@ def spinning_top():
         for i in range(num_points + 1):  # +1 to close the loop
             angle = 2 * np.pi * i / num_points
 
-            # Circle motion
+            # Circle motion in XY plane
             x = center[0] + radius * np.cos(angle)
             y = center[1] + radius * np.sin(angle)
             z = center[2]
 
-            # Calculate orientation to point inward toward center
-            # Base orientation pointing down
-            base_rx = 2.976  # Roughly pointing down
-            base_ry = 0.952
+            # Keep gripper pointing straight down (avoid singularities)
+            # Use center pose orientation as base, only rotate wrist 3
+            rx = center[3]  # Keep base orientation from center pose
+            ry = center[4]
 
-            # Tilt toward center (adjust rx, ry based on position around circle)
-            rx = base_rx + tilt_angle * np.cos(angle)
-            ry = base_ry + tilt_angle * np.sin(angle)
-
-            # Continuous rotation around tool axis (spinning)
-            rz = angle * 2  # Multiple rotations as it goes around
+            # Rotate around tool axis (wrist 3) to create spinning effect
+            # As it goes around the circle, it also spins around its own axis
+            rz = center[5] + angle * 2  # 2 full rotations as it goes around once
 
             pose_str = f"p[{x}, {y}, {z}, {rx}, {ry}, {rz}]"
 
             if i < num_points:
                 # Use blend radius for smooth transitions
-                script += f"\n    movel({pose_str}, a=0.8, v=0.12, r={blend_radius})"
+                script += f"\n    movel({pose_str}, a=0.5, v=0.1, r={blend_radius})"
             else:
                 # Last point
-                script += f"\n    movel({pose_str}, a=0.8, v=0.12)"
+                script += f"\n    movel({pose_str}, a=0.5, v=0.1)"
 
         script += """
 end
@@ -1281,39 +1327,31 @@ def demo_spiral_search():
 
 
 def demo_gripper_test():
-    """Simple gripper open/close test using pyRobotiqGripper"""
-    print("\nGripper Test Demo (pyRobotiqGripper)")
+    """Simple gripper open/close test using Robotiq URCap functions"""
+    print("\n=== Gripper Test Demo (Robotiq URCap) ===")
 
     config = URConfig(robot_ip="192.168.1.101")
     robot = SafeURRobot(config)
 
-    # Connect without auto gripper activation to troubleshoot
-    if not robot.connect(activate_gripper=False, power_on_robot=False):
+    # Connect (robot already on, activate gripper)
+    if not robot.connect(activate_gripper=True, power_on_robot=False):
         print("Failed to connect to robot")
         return
 
-    # Manually try gripper connection
-    if not robot.gripper_connected:
-        print("\nGripper was not auto-connected. Trying manual connection...")
+    if not robot.gripper_initialized:
+        print("\nWarning: Gripper not initialized automatically")
+        print("Trying manual activation...")
         try:
-            if ROBOTIQ_AVAILABLE:
-                robot.gripper = RobotiqGripper()
-                robot.gripper.activate()
-                robot.gripper_connected = True
-                print("Gripper manually connected and activated!")
-            else:
-                print("ERROR: pyRobotiqGripper not installed!")
-                print("Install with: pip install minimalmodbus pyRobotiqGripper")
-                robot.disconnect()
-                return
+            robot.rq_activate_gripper()
+            robot.gripper_initialized = True
+            print("Gripper manually activated!")
         except Exception as e:
-            print(f"Manual gripper connection failed: {e}")
+            print(f"Manual activation failed: {e}")
             print("\nTroubleshooting:")
-            print("  1. Ensure gripper is powered on")
-            print("  2. Check USB/serial connection to gripper")
-            print("  3. Verify gripper serial port (may need to specify manually)")
-            print("  4. On Windows, check Device Manager for COM port")
-            print("  5. On Linux, check /dev/ttyUSB* or /dev/ttyACM*")
+            print("  1. Ensure Robotiq_Grippers URCap is installed on robot")
+            print("  2. Check that grippy.script is in src/robot_control/")
+            print("  3. Verify gripper is powered on and connected to robot")
+            print("  4. Try activating from teach pendant first")
             robot.disconnect()
             return
 
@@ -1323,72 +1361,62 @@ def demo_gripper_test():
 
         # Test 1: Open gripper
         print("Test 1: Opening gripper...")
-        robot.rq_open_gripper()
-        time.sleep(2)
-        pos = robot.get_gripper_position()
-        print(f"Gripper position: {pos} (0=fully open, 255=fully closed)")
-        time.sleep(1)
+        robot.open_gripper()
+        time.sleep(3)
+        print("Gripper should be fully open")
 
         # Test 2: Close gripper
         print("\nTest 2: Closing gripper fully...")
-        robot.rq_close_gripper(position=255)
-        time.sleep(2)
-        pos = robot.get_gripper_position()
-        print(f"Gripper position: {pos}")
-        time.sleep(1)
+        robot.close_gripper()
+        time.sleep(3)
+        print("Gripper should be fully closed")
 
         # Test 3: Half open
-        print("\nTest 3: Moving to half-open position (128)...")
-        robot.gripper_move_to(128)
-        time.sleep(2)
-        pos = robot.get_gripper_position()
-        print(f"Gripper position: {pos}")
-        time.sleep(1)
+        print("\nTest 3: Moving to half-open position (50%)...")
+        robot.gripper_move_to(50)
+        time.sleep(3)
+        print("Gripper should be at 50%")
 
         # Test 4: Quarter positions
         print("\nTest 4: Testing quarter positions...")
-        for target in [64, 128, 192, 255, 0]:
-            print(f"  Moving to position {target}...")
+        for target in [25, 50, 75, 100, 0]:
+            print(f"  Moving to position {target}%...")
             robot.gripper_move_to(target)
-            time.sleep(1.5)
-            pos = robot.get_gripper_position()
-            print(f"    Actual position: {pos}")
+            time.sleep(2)
 
         # Test 5: Multiple cycles
         print("\nTest 5: Running 3 open/close cycles...")
         for i in range(3):
             print(f"  Cycle {i+1}/3: Opening...")
-            robot.rq_open_gripper()
-            time.sleep(1)
+            robot.open_gripper()
+            time.sleep(2)
 
             print(f"  Cycle {i+1}/3: Closing...")
-            robot.rq_close_gripper()
-            time.sleep(1)
+            robot.close_gripper()
+            time.sleep(2)
 
         # Test 6: Object detection test
         print("\nTest 6: Object detection test...")
         print("Place an object in the gripper and it will attempt to grip...")
         time.sleep(3)
-        robot.rq_open_gripper()
+        robot.open_gripper()
         time.sleep(2)
         print("Closing gripper...")
-        robot.rq_close_gripper()
+        robot.close_gripper()
         time.sleep(2)
         detected = robot.rq_check_object_detected()
-        pos = robot.get_gripper_position()
         print(f"Object detected: {detected}")
-        print(f"Final position: {pos}")
 
-        print("\nGripper Test Complete")
-        if robot.gripper_connected:
-            print("Gripper is working correctly with pyRobotiqGripper!")
+        print("\n=== Gripper Test Complete ===")
+        if robot.gripper_initialized:
+            print("✓ Gripper is working correctly with URCap functions!")
         else:
-            print("Gripper connection issues")
+            print("✗ Gripper initialization issues")
 
         # Leave gripper open
         print("\nLeaving gripper in open position...")
-        robot.rq_open_gripper()
-        time.sleep(1)
+        robot.open_gripper()
+        time.sleep(2)
 
     finally:
         robot.disconnect()

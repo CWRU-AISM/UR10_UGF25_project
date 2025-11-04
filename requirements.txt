@@ -19,8 +19,6 @@ scikit-learn>=1.1.0
 # Robot Control
 pyserial>=3.5
 math3d>=3.4.0
-minimalmodbus>=2.0.0
-pyRobotiqGripper>=0.1.0
 
 # Data Processing
 pandas>=1.5.0

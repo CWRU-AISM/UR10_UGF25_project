@@ -1,0 +1,7 @@
+ Program
+   Variables Setup
+   Robot Program
+     Gripper Reset and Activate
+     Grip Check
+       If grip validated          
+         Gripper Move81% (1)
