@@ -14,6 +14,8 @@ import json
 import os
 from datetime import datetime
 from math import pi
+from pyrobotiqgripper import RobotiqGripper
+ROBOTIQ_AVAILABLE = True
 
 @dataclass
 class URConfig:
@@ -40,46 +42,93 @@ class URConfig:
 
 class URRobot:
     """Main class for UR robot control via TCP/IP"""
-    
-    def __init__(self, config: URConfig = None):
-        """Initialize UR robot connection"""
+
+    def __init__(self, config: URConfig = None, gripper_port: str = None):
+        """Initialize UR robot connection
+
+        Args:
+            config: URConfig object with robot settings
+            gripper_port: Serial port for Robotiq gripper (e.g., 'COM3' or '/dev/ttyUSB0')
+                         If None, will auto-detect
+        """
         self.config = config or URConfig()
         self.socket = None
         self.dashboard_socket = None
         self.is_connected = False
         self.current_pose = None
         self.current_joints = None
-        
+        self.current_digital_inputs = [False] * 10
+        self.current_digital_outputs = [False] * 10
+        self.gripper_object_detected = False
+
+        # Robotiq Gripper via pyRobotiqGripper
+        self.gripper = None
+        self.gripper_port = gripper_port
+        self.gripper_connected = False
+
         # Thread for monitoring robot state
         self.monitor_thread = None
         self.monitoring = False
+        self._state_lock = threading.Lock()
         
-    def connect(self):
-        """Establish connection to UR robot"""
+    def connect(self, activate_gripper=True, power_on_robot=False):
+        """Establish connection to UR robot
+
+        Args:
+            activate_gripper: If True, automatically activate gripper on connect
+            power_on_robot: If True, power on robot and release brakes (set False if already on)
+        """
         try:
             # Connect to primary interface
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.settimeout(5)
             self.socket.connect((self.config.robot_ip, self.config.tcp_port))
-            
+
             # Connect to dashboard
             self.dashboard_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.dashboard_socket.settimeout(5)
             self.dashboard_socket.connect((self.config.robot_ip, self.config.dashboard_port))
-            
+
             self.is_connected = True
             print(f"Connected to UR robot at {self.config.robot_ip}")
-            
+
             # Start monitoring thread
             self.start_monitoring()
-            
-            # Power on and release brakes
-            self.power_on()
-            time.sleep(1)
-            self.release_brakes()
-            
+
+            # Power on and release brakes (only if requested)
+            if power_on_robot:
+                print("Powering on robot...")
+                self.power_on()
+                time.sleep(2)
+                print("Releasing brakes...")
+                self.release_brakes()
+                time.sleep(2)
+
+            # Connect to Robotiq gripper via serial/Modbus
+            if ROBOTIQ_AVAILABLE and activate_gripper:
+                try:
+                    # print("Connecting to Robotiq gripper...")
+                    # if self.gripper_port:
+                    #     self.gripper = RobotiqGripper(port=self.gripper_port)
+                    # else:
+                    #     # Auto-detect serial port
+                    self.gripper = RobotiqGripper()
+
+                    print("Activating gripper (gripper will fully open and close)...")
+                    self.gripper.activate()
+                    self.gripper_connected = True
+                    print("Gripper activated and ready!")
+
+                except Exception as e:
+                    print(f"Warning: Gripper connection failed: {e}")
+                    print("Gripper commands will not be available")
+                    self.gripper = None
+                    self.gripper_connected = False
+            elif not ROBOTIQ_AVAILABLE:
+                print("pyRobotiqGripper not installed - gripper control unavailable")
+
             return True
-            
+
         except Exception as e:
             print(f"Failed to connect to robot: {e}")
             return False
@@ -87,12 +136,22 @@ class URRobot:
     def disconnect(self):
         """Close connection to UR robot"""
         self.stop_monitoring()
-        
+
+        # Disconnect gripper
+        if self.gripper and self.gripper_connected:
+            try:
+                print("Disconnecting gripper...")
+                # Note: pyRobotiqGripper doesn't have explicit disconnect
+                self.gripper = None
+                self.gripper_connected = False
+            except Exception as e:
+                print(f"Error disconnecting gripper: {e}")
+
         if self.socket:
             self.socket.close()
         if self.dashboard_socket:
             self.dashboard_socket.close()
-            
+
         self.is_connected = False
         print("Disconnected from robot")
     
@@ -148,53 +207,67 @@ class URRobot:
         """Emergency stop"""
         return self.send_dashboard_command("stop")
     
-    def move_joint(self, joint_positions: List[float], 
-                   velocity: float = None, acceleration: float = None):
+    def move_joint(self, joint_positions: List[float],
+                   velocity: float = None, acceleration: float = None, wait: bool = True):
         """
         Move to target joint positions
         Args:
             joint_positions: List of 6 joint angles in radians
             velocity: Joint velocity in rad/s
             acceleration: Joint acceleration in rad/s^2
+            wait: If True, wait for movement to complete before returning
         """
         if len(joint_positions) != 6:
             print("Error: Need exactly 6 joint positions")
             return False
-        
+
         vel = velocity or self.config.max_joint_velocity
         acc = acceleration or self.config.max_joint_acceleration
-        
+
         # Format joint positions
         joints_str = f"[{', '.join(map(str, joint_positions))}]"
-        
+
         # Create URScript command
         script = f"movej({joints_str}, a={acc}, v={vel})"
-        
-        return self.send_script(script)
+
+        result = self.send_script(script)
+
+        # Wait for movement to complete
+        if wait and result:
+            time.sleep(0.5)  # Initial delay for command processing
+
+        return result
     
-    def move_linear(self, pose: List[float], 
-                    velocity: float = None, acceleration: float = None):
+    def move_linear(self, pose: List[float],
+                    velocity: float = None, acceleration: float = None, wait: bool = True):
         """
         Linear movement to target pose
         Args:
             pose: [x, y, z, rx, ry, rz] in meters and radians
             velocity: Tool velocity in m/s
             acceleration: Tool acceleration in m/s^2
+            wait: If True, wait for movement to complete before returning
         """
         if len(pose) != 6:
             print("Error: Pose must have 6 values [x, y, z, rx, ry, rz]")
             return False
-        
+
         vel = velocity or self.config.max_velocity
         acc = acceleration or self.config.max_acceleration
-        
+
         # Format pose
         pose_str = f"p[{', '.join(map(str, pose))}]"
-        
+
         # Create URScript command
         script = f"movel({pose_str}, a={acc}, v={vel})"
-        
-        return self.send_script(script)
+
+        result = self.send_script(script)
+
+        # Wait for movement to complete
+        if wait and result:
+            time.sleep(0.5)  # Initial delay for command processing
+
+        return result
     
     def move_circular(self, via_pose: List[float], end_pose: List[float],
                       velocity: float = None, acceleration: float = None):
@@ -232,21 +305,140 @@ class URRobot:
         
         return self.send_script(script)
     
-    # Gripper
-    
+    # Gripper: Robotiq 2F85 via pyRobotiqGripper (Modbus/Serial)
+
     def set_digital_output(self, pin: int, value: bool):
         """Set digital output pin"""
         val = 'True' if value else 'False'
         script = f"set_digital_out({pin}, {val})"
         return self.send_script(script)
-    
+
+    def rq_activate_gripper(self):
+        """Activate and initialize Robotiq gripper
+        This is now handled in connect() method with pyRobotiqGripper
+        """
+        if not self.gripper_connected:
+            print("Gripper not connected via pyRobotiqGripper")
+            return False
+
+        try:
+            print("Activating gripper (will fully open and close)...")
+            self.gripper.activate()
+            print("Gripper activated!")
+            return True
+        except Exception as e:
+            print(f"Gripper activation failed: {e}")
+            return False
+
+    def rq_close_gripper(self, force: int = 100, speed: int = 100, position: int = 255):
+        """Close Robotiq gripper using pyRobotiqGripper
+
+        Args:
+            force: Grip force 0-255 (default 100) - Note: pyRobotiqGripper handles this differently
+            speed: Closing speed 0-255 (default 100) - Note: pyRobotiqGripper handles this differently
+            position: Target position 0-255 (0=open, 255=closed, default 255)
+        """
+        if not self.gripper_connected:
+            print("Gripper not connected")
+            return False
+
+        try:
+            # pyRobotiqGripper uses goTo() method with position in 0-255
+            self.gripper.goTo(position)
+            return True
+        except Exception as e:
+            print(f"Gripper close failed: {e}")
+            return False
+
+    def rq_open_gripper(self, speed: int = 100):
+        """Open Robotiq gripper using pyRobotiqGripper
+
+        Args:
+            speed: Opening speed 0-255 (default 100) - Note: pyRobotiqGripper may not support this
+        """
+        if not self.gripper_connected:
+            print("Gripper not connected")
+            return False
+
+        try:
+            self.gripper.open()
+            return True
+        except Exception as e:
+            print(f"Gripper open failed: {e}")
+            return False
+
+    def rq_check_object_detected(self) -> bool:
+        """Check if Robotiq gripper has detected an object
+        Returns True if object detected (gripper stopped before fully closed)
+
+        Note: This may not be directly supported by pyRobotiqGripper
+        You can check position to infer if object was gripped
+        """
+        if not self.gripper_connected:
+            print("Gripper not connected")
+            return False
+
+        try:
+            # Check current position - if it's not fully closed after closing, object detected
+            position = self.gripper.getPosition()
+            # If position is between open (0) and closed (255), likely gripping something
+            if 10 < position < 245:
+                return True
+            return False
+        except Exception as e:
+            print(f"Object detection check failed: {e}")
+            return False
+
+    def get_gripper_position(self) -> Optional[int]:
+        """Get current gripper position (0-255, 0=fully open, 255=fully closed)
+        Returns None if unable to read position
+        """
+        if not self.gripper_connected:
+            return None
+
+        try:
+            return self.gripper.getPosition()
+        except Exception as e:
+            print(f"Failed to get gripper position: {e}")
+            return None
+
+    def show_popup(self, message: str, warning: bool = False):
+        """Show popup message on robot pendant
+        Args:
+            message: Message to display
+            warning: If True, shows as warning popup
+        """
+        if warning:
+            script = f'popup("{message}", warning=True, error=False)'
+        else:
+            script = f'popup("{message}")'
+        return self.send_script(script)
+
+    # Convenience methods with default parameters
     def close_gripper(self):
-        """Close gripper (example using DO 0)"""
-        return self.set_digital_output(0, True)
-    
+        """Close gripper fully (position 255)"""
+        return self.rq_close_gripper(position=255)
+
     def open_gripper(self):
-        """Open gripper (example using DO 0)"""
-        return self.set_digital_output(0, False)
+        """Open gripper fully (position 0)"""
+        return self.rq_open_gripper()
+
+    def gripper_move_to(self, position: int):
+        """Move gripper to specific position
+
+        Args:
+            position: Position 0-255 (0=fully open, 255=fully closed)
+        """
+        if not self.gripper_connected:
+            print("Gripper not connected")
+            return False
+
+        try:
+            self.gripper.goTo(position)
+            return True
+        except Exception as e:
+            print(f"Gripper move failed: {e}")
+            return False
     
     # State Monitoring
     
@@ -266,13 +458,116 @@ class URRobot:
     
     def _monitor_loop(self):
         """Background thread for monitoring robot state"""
-        # Simplified, need parsing
         while self.monitoring:
             try:
+                if not self.socket:
+                    break
 
-                time.sleep(0.1)
-            except:
+                # Read the message size (first 4 bytes)
+                self.socket.settimeout(0.5)
+                size_bytes = self.socket.recv(4)
+
+                if len(size_bytes) < 4:
+                    continue
+
+                msg_size = struct.unpack('>i', size_bytes)[0]
+
+                # Read the rest of the message
+                remaining = msg_size - 4
+                data = b''
+                while len(data) < remaining:
+                    chunk = self.socket.recv(min(remaining - len(data), 4096))
+                    if not chunk:
+                        break
+                    data += chunk
+
+                # Parse the robot state data
+                self._parse_robot_state(data)
+
+            except socket.timeout:
+                continue
+            except Exception as e:
+                if self.monitoring:  # Only print if we're supposed to be monitoring
+                    print(f"Monitor loop error: {e}")
                 break
+
+    def _parse_robot_state(self, data):
+        """Parse robot state packet"""
+        try:
+            offset = 0
+
+            # Parse through all sub-packages in the robot state
+            while offset < len(data):
+                if offset + 5 > len(data):
+                    break
+
+                # Each sub-package has: length(4) + type(1) + data
+                pkg_length = struct.unpack('>i', data[offset:offset+4])[0]
+                pkg_type = data[offset+4]
+
+                if offset + pkg_length > len(data):
+                    break
+
+                pkg_data = data[offset+5:offset+pkg_length]
+
+                # Package type 0: Robot mode data
+                if pkg_type == 0 and len(pkg_data) >= 1:
+                    pass  # Could parse robot mode here
+
+                # Package type 1: Joint data
+                elif pkg_type == 1 and len(pkg_data) >= 252:
+                    # Each joint: q(8), qd(8), qdd(8), I(4), V(4), T(4), Tm(4) = 41 bytes * 6 joints
+                    joints = []
+                    for i in range(6):
+                        joint_offset = i * 41
+                        if joint_offset + 8 <= len(pkg_data):
+                            q = struct.unpack('>d', pkg_data[joint_offset:joint_offset+8])[0]
+                            joints.append(q)
+
+                    with self._state_lock:
+                        self.current_joints = joints
+
+                # Package type 4: Cartesian info (TCP pose)
+                elif pkg_type == 4 and len(pkg_data) >= 48:
+                    # X, Y, Z, Rx, Ry, Rz (6 doubles)
+                    pose = []
+                    for i in range(6):
+                        val = struct.unpack('>d', pkg_data[i*8:i*8+8])[0]
+                        pose.append(val)
+
+                    with self._state_lock:
+                        self.current_pose = pose
+
+                # Package type 3: Tool data (includes digital I/O)
+                elif pkg_type == 3 and len(pkg_data) >= 8:
+                    # Digital inputs and outputs are in this package
+                    # Offset depends on package version, typically around byte 16-17
+                    if len(pkg_data) >= 18:
+                        digital_inputs = struct.unpack('>H', pkg_data[16:18])[0]
+
+                        # Parse digital input bits
+                        with self._state_lock:
+                            for i in range(10):
+                                self.current_digital_inputs[i] = bool(digital_inputs & (1 << i))
+
+                # Package type 2: Master board data (includes digital I/O)
+                elif pkg_type == 2 and len(pkg_data) >= 28:
+                    # Digital input states at offset 11-12
+                    # Digital output states at offset 13-14
+                    if len(pkg_data) >= 14:
+                        digital_inputs = struct.unpack('>H', pkg_data[11:13])[0]
+                        digital_outputs = struct.unpack('>H', pkg_data[13:15])[0]
+
+                        with self._state_lock:
+                            for i in range(10):
+                                self.current_digital_inputs[i] = bool(digital_inputs & (1 << i))
+                                self.current_digital_outputs[i] = bool(digital_outputs & (1 << i))
+
+                offset += pkg_length
+
+        except Exception:
+            # Don't spam errors, just skip this packet
+            pass
 
 
 class TrajectoryGenerator:
@@ -357,151 +652,299 @@ class SafeURRobot(URRobot):
         
         return True
     
-    def move_linear(self, pose: List[float], 
-                    velocity: float = None, acceleration: float = None):
+    def move_linear(self, pose: List[float],
+                    velocity: float = None, acceleration: float = None, wait: bool = True):
         """Override move_linear with safety check"""
         # if not self.check_pose_safety(pose):
         #     print("Safety check failed! Movement cancelled.")
         #     return False
-        
+
         # Reduce speed for safety
         vel = min(velocity or self.config.max_velocity, 0.5)
         acc = min(acceleration or self.config.max_acceleration, 0.5)
-        
-        return super().move_linear(pose, vel, acc)
+
+        return super().move_linear(pose, vel, acc, wait)
 
 def demo_basic_movement():
-    """Demo: Basic movement patterns"""
-    
+    """Basic movement patterns"""
+
     # Initialize robot
     config = URConfig(robot_ip="192.168.1.101")  # Update IP
     robot = SafeURRobot(config)
-    
+
     if not robot.connect():
         print("Failed to connect to robot")
         return
-    
+
     try:
         # Home position
-        home_joints = [(159.73*pi/180), -102.5*pi/180, -100*pi/180, 296*pi/180, -260*pi/180, 35*pi/180]  # radians
-        
+        home_joints = [(159.73*pi/180), -102.5*pi/180, -100*pi/180, 296*pi/180, -260*pi/180, 35*pi/180]
+
         print("Moving to home position...")
         robot.move_joint(home_joints, velocity=0.5)
-        time.sleep(3)
-        
+        time.sleep(5)  # Increased wait time for smoother operation
+
         # Square movement pattern
         print("Executing square pattern...")
-        base_pose = [-.65, .43, .346, 2.976, 0.952, 0.016]  # [x, y, z, rx, ry, rz]
-        
         square_poses = [
             [-.925, 0.518, .341, 2.976, .952, .016],
             [-1.051, 0.518, .341, 2.976, .952, .016],
             [-1.051, 0.35, .341, 2.976, .952, .016],
             [-.925, 0.35, .341, 2.976, .952, .016],
         ]
-        
+
         for i, pose in enumerate(square_poses):
             print(f"  Moving to corner {i+1}/4")
             robot.move_linear(pose, velocity=0.1)
-            time.sleep(2)
-        
-        # print("Returning to home")
+            time.sleep(4)  # Longer wait
+
+        print("Returning to home")
         robot.move_joint(home_joints, velocity=0.5)
-        
+        time.sleep(5)
+
     finally:
         robot.disconnect()
 
 
 def demo_pick_and_place():
-    """Demo: Simple pick and place operation"""
-    print("\nPick and Place Demo")
-    
-    config = URConfig(robot_ip="192.168.1.101")  
+    """Smart pick and place with object detection"""
+    print("\nSmart Pick and Place")
+
+    config = URConfig(robot_ip="192.168.1.101")
     robot = SafeURRobot(config)
-    
+
     if not robot.connect():
         return
-    
+
     try:
-        # Define positions
-        pick_pose = [0.3, 0.1, 0.2, 0, 3.14, 0]
-        above_pick = [0.3, 0.1, 0.3, 0, 3.14, 0]
-        place_pose = [0.3, -0.1, 0.2, 0, 3.14, 0]
-        above_place = [0.3, -0.1, 0.3, 0, 3.14, 0]
-        
-        print("Starting pick and place sequence...")
-        
-        # Move above pick position
-        print("1. Moving above pick position")
-        robot.move_linear(above_pick, velocity=0.2)
+        # Home position
+        home_joints = [(159.73*pi/180), -102.5*pi/180, -100*pi/180, 296*pi/180, -260*pi/180, 35*pi/180]
+
+        print("Moving to home position...")
+        robot.move_joint(home_joints, velocity=0.5)
+        time.sleep(5)
+
+        # Open gripper initially
+        print("Opening gripper...")
+        robot.rq_open_gripper()
         time.sleep(2)
-        
-        # Move down to pick
-        print("2. Moving down to pick")
-        robot.move_linear(pick_pose, velocity=0.05)
-        time.sleep(1)
-        
-        # Close gripper
+
+        # Define positions (pickup and dropoff)
+        pickup_pose = [-0.413, 0.654, -0.12, 2.191, 2.249, 0.1]
+        above_pickup = [-0.413, 0.654, -0.05, 2.191, 2.249, 0.1]  # Safe height above
+        dropoff_pose = [-0.413, 0.885, -0.1456, 2.19, 2.25, 0.1]
+        above_dropoff = [-0.413, 0.885, -0.08, 2.19, 2.25, 0.1]  # Safe height above
+
+        print("\nStarting smart pick and place sequence...")
+
+        # Try pickup location first
+        print("1. Moving above pickup position")
+        robot.move_linear(above_pickup, velocity=0.1)
+        time.sleep(4)
+
+        print("2. Moving down to pickup")
+        robot.move_linear(pickup_pose, velocity=0.05)
+        time.sleep(3)
+
+        # Attempt to grip object
         print("3. Closing gripper")
-        robot.close_gripper()
-        time.sleep(1)
-        
-        # Move up
-        print("4. Lifting object")
-        robot.move_linear(above_pick, velocity=0.05)
-        time.sleep(1)
-        
-        # Move to place position
-        print("5. Moving to place position")
-        robot.move_linear(above_place, velocity=0.2)
+        robot.rq_close_gripper()
         time.sleep(2)
-        
-        # Move down to place
-        print("6. Lowering object")
-        robot.move_linear(place_pose, velocity=0.05)
-        time.sleep(1)
-        
-        # Open gripper
-        print("7. Opening gripper")
-        robot.open_gripper()
-        time.sleep(1)
-        
-        # Move up
-        print("8. Moving up")
-        robot.move_linear(above_place, velocity=0.1)
-        
-        print("Pick and place complete!")
-        
+
+        # Check if object detected at pickup
+        print("4. Checking for object...")
+        object_at_pickup = robot.rq_check_object_detected()
+
+        if object_at_pickup:
+            print("Object detected at pickup location")
+
+            # Move up with object
+            print("5. Lifting object")
+            robot.move_linear(above_pickup, velocity=0.05)
+            time.sleep(3)
+
+            # Move to dropoff position
+            print("6. Moving to dropoff position")
+            robot.move_linear(above_dropoff, velocity=0.1)
+            time.sleep(4)
+
+            # Move down to place
+            print("7. Lowering object")
+            robot.move_linear(dropoff_pose, velocity=0.05)
+            time.sleep(3)
+
+            # Release object
+            print("8. Opening gripper")
+            robot.rq_open_gripper()
+            time.sleep(2)
+
+            # Move up
+            print("9. Moving up")
+            robot.move_linear(above_dropoff, velocity=0.1)
+            time.sleep(3)
+
+        else:
+            print("No object at pickup location: checking dropoff...")
+
+            # Move up without object
+            robot.move_linear(above_pickup, velocity=0.05)
+            time.sleep(3)
+            robot.rq_open_gripper()
+            time.sleep(1)
+
+            # Move to dropoff to check
+            print("5. Moving to dropoff position")
+            robot.move_linear(above_dropoff, velocity=0.1)
+            time.sleep(4)
+
+            print("6. Moving down to dropoff")
+            robot.move_linear(dropoff_pose, velocity=0.05)
+            time.sleep(3)
+
+            # Attempt to grip at dropoff
+            print("7. Closing gripper")
+            robot.rq_close_gripper()
+            time.sleep(2)
+
+            # Check if object at dropoff
+            object_at_dropoff = robot.rq_check_object_detected()
+
+            if object_at_dropoff:
+                print("Object found at dropoff: moving to pickup")
+
+                # Move up with object
+                print("8. Lifting object")
+                robot.move_linear(above_dropoff, velocity=0.05)
+                time.sleep(3)
+
+                # Move to pickup position
+                print("9. Moving to pickup position")
+                robot.move_linear(above_pickup, velocity=0.1)
+                time.sleep(4)
+
+                # Place at pickup
+                print("10. Lowering object")
+                robot.move_linear(pickup_pose, velocity=0.05)
+                time.sleep(3)
+
+                # Release
+                print("11. Opening gripper")
+                robot.rq_open_gripper()
+                time.sleep(2)
+
+                # Move up
+                robot.move_linear(above_pickup, velocity=0.1)
+                time.sleep(3)
+            else:
+                print("No object found at either location")
+                robot.move_linear(above_dropoff, velocity=0.1)
+                time.sleep(3)
+                robot.rq_open_gripper()
+                time.sleep(1)
+
+        print("\nPick and place complete!")
+
+        # Return to home
+        print("Returning to home")
+        robot.move_joint(home_joints, velocity=0.5)
+        time.sleep(5)
+
     finally:
         robot.disconnect()
 
 
 def demo_trajectory_execution():
-    """Demo: Execute smooth trajectory"""
-    print("\nTrajectory Execution Demo")
-    
-    config = URConfig(robot_ip="192.168.1.100")
+    """Execute smooth spinning top trajectory with blended movements"""
+    print("\nSpinning Top Trajectory")
+
+    config = URConfig(robot_ip="192.168.1.101")
     robot = SafeURRobot(config)
-    
+
     if not robot.connect():
         return
-    
+
     try:
-        # Generate circular trajectory
-        center = [0.3, 0.0, 0.3, 0, 3.14, 0]
-        radius = 0.1
-        
-        print("Generating circular trajectory...")
-        trajectory = TrajectoryGenerator.circular_trajectory(center, radius, num_points=20)
-        
-        print("Executing trajectory...")
-        for i, pose in enumerate(trajectory):
-            print(f"  Point {i+1}/{len(trajectory)}")
-            robot.move_linear(pose, velocity=0.1, acceleration=0.1)
-            time.sleep(0.5)
-        
-        print("Trajectory complete!")
-        
+        # Home position
+        home_joints = [(159.73*pi/180), -102.5*pi/180, -100*pi/180, 296*pi/180, -260*pi/180, 35*pi/180]
+
+        print("Moving to home position...")
+        robot.move_joint(home_joints, velocity=0.5)
+        time.sleep(5)
+
+        # Close gripper first
+        print("Closing gripper...")
+        robot.rq_close_gripper()
+        time.sleep(2)
+
+        # Move to starting position
+        center = [-0.988, 0.434, 0.341, 2.976, 0.952, 0.016]
+        print("Moving to start position...")
+        robot.move_linear(center, velocity=0.1)
+        time.sleep(3)
+
+        # Generate spinning top trajectory
+        print("Executing spinning top motion...")
+        num_points = 16
+        radius = 0.06
+        tilt_angle = 0.4  # Tilt inward toward center (radians)
+
+        # Build URScript for smooth blended circular motion with inward tilt and rotation
+        script = """
+def spinning_top():
+    # Blend radius for smooth continuous motion
+    blend_radius = 0.01
+
+    # Starting position
+    movej(get_actual_joint_positions(), a=1.2, v=0.5)
+    """
+
+        for i in range(num_points + 1):  # +1 to close the loop
+            angle = 2 * np.pi * i / num_points
+
+            # Circle motion
+            x = center[0] + radius * np.cos(angle)
+            y = center[1] + radius * np.sin(angle)
+            z = center[2]
+
+            # Calculate orientation to point inward toward center
+            # Base orientation pointing down
+            base_rx = 2.976  # Roughly pointing down
+            base_ry = 0.952
+
+            # Tilt toward center (adjust rx, ry based on position around circle)
+            rx = base_rx + tilt_angle * np.cos(angle)
+            ry = base_ry + tilt_angle * np.sin(angle)
+
+            # Continuous rotation around tool axis (spinning)
+            rz = angle * 2  # Multiple rotations as it goes around
+
+            pose_str = f"p[{x}, {y}, {z}, {rx}, {ry}, {rz}]"
+
+            if i < num_points:
+                # Use blend radius for smooth transitions
+                script += f"\n    movel({pose_str}, a=0.8, v=0.12, r={blend_radius})"
+            else:
+                # Last point
+                script += f"\n    movel({pose_str}, a=0.8, v=0.12)"
+
+        script += """
+end
+spinning_top()
+"""
+
+        robot.send_script(script)
+        time.sleep(15)  # Wait for motion to complete
+
+        print("Spinning top motion complete")
+
+        robot.rq_open_gripper()
+        time.sleep(2)
+
+        # Return to home
+        print("Returning to home")
+        robot.move_joint(home_joints, velocity=0.5)
+        time.sleep(5)
+
     finally:
         robot.disconnect()
 
@@ -565,51 +1008,579 @@ class URScriptTemplates:
         """
 
 
-# Implement
+# Additional Demos
 
-def exercise_1_joint_control():
-    """Exercise 1: Direct joint control"""
-    print("\Exercise 1: Joint Control")
-    # TODO: Implement moving each joint individually
-    # Record joint limits and create safe movement sequence
-    pass
+def demo_individual_joint_control():
+    """Individual joint control and movements"""
+    print("\nIndividual Joint Control")
+
+    config = URConfig(robot_ip="192.168.1.101")
+    robot = SafeURRobot(config)
+
+    if not robot.connect():
+        return
+
+    try:
+        # Home position
+        home_joints = [(159.73*pi/180), -102.5*pi/180, -100*pi/180, 296*pi/180, -260*pi/180, 35*pi/180]
+
+        print("Moving to home position...")
+        robot.move_joint(home_joints, velocity=0.5)
+        time.sleep(5)
+
+        print("\nDemonstrating individual joint movements...")
+
+        # Move joint 6 (wrist rotation) back and forth
+        print("1. Moving joint 6 (wrist rotation)")
+        joint_positions = home_joints.copy()
+        joint_positions[5] = 85*pi/180  # Rotate wrist
+        robot.move_joint(joint_positions, velocity=0.3)
+        time.sleep(4)
+
+        joint_positions[5] = -15*pi/180  # Rotate back
+        robot.move_joint(joint_positions, velocity=0.3)
+        time.sleep(4)
+
+        # Move joint 5 (wrist tilt)
+        print("2. Moving joint 5 (wrist tilt)")
+        joint_positions = home_joints.copy()
+        joint_positions[4] = -220*pi/180
+        robot.move_joint(joint_positions, velocity=0.3)
+        time.sleep(4)
+
+        # Move joint 4 (elbow rotation)
+        print("3. Moving joint 4 (elbow rotation)")
+        joint_positions = home_joints.copy()
+        joint_positions[3] = 320*pi/180
+        robot.move_joint(joint_positions, velocity=0.3)
+        time.sleep(4)
+
+        # Return to home
+        print("\nReturning to home position")
+        robot.move_joint(home_joints, velocity=0.5)
+        time.sleep(5)
+
+        print("Individual joint control demo complete!")
+
+    finally:
+        robot.disconnect()
 
 
-def exercise_2_coordinate_frames():
-    """Exercise 2: Understanding coordinate frames"""
-    print("Exercise 2: Coordinate Frames")
-    # TODO: Move robot in tool frame vs base frame
-    # Demonstrate the difference
-    pass
+def demo_coordinate_frames():
+    """Tool frame vs base frame movements"""
+    print("\nCoordinate Frames")
+
+    config = URConfig(robot_ip="192.168.1.101")
+    robot = SafeURRobot(config)
+
+    if not robot.connect():
+        return
+
+    try:
+        # Home position
+        home_joints = [(159.73*pi/180), -102.5*pi/180, -100*pi/180, 296*pi/180, -260*pi/180, 35*pi/180]
+
+        print("Moving to home position...")
+        robot.move_joint(home_joints, velocity=0.5)
+        time.sleep(5)
+
+        # Starting position in safe workspace
+        start_pose = [-0.988, 0.434, 0.341, 2.976, 0.952, 0.016]
+
+        print("\n1. Moving to start position in base frame")
+        robot.move_linear(start_pose, velocity=0.1)
+        time.sleep(4)
+
+        # Base frame movement - move along X axis
+        print("2. Base frame: Moving +X (forward in world frame)")
+        base_pose = start_pose.copy()
+        base_pose[0] += 0.05  # Move 5cm along world X
+        robot.move_linear(base_pose, velocity=0.05)
+        time.sleep(4)
+
+        print("3. Base frame: Moving -Y (left in world frame)")
+        base_pose[1] -= 0.05  # Move 5cm along world -Y
+        robot.move_linear(base_pose, velocity=0.05)
+        time.sleep(4)
+
+        # Return to start
+        print("4. Returning to start position")
+        robot.move_linear(start_pose, velocity=0.1)
+        time.sleep(4)
+
+        # Tool frame movement
+        print("5. Tool frame: Moving forward in tool direction")
+        script = """
+current_pose = get_actual_tcp_pose()
+target_pose = pose_trans(current_pose, p[0.05, 0, 0, 0, 0, 0])
+movel(target_pose, a=0.5, v=0.05)
+"""
+        robot.send_script(script)
+        time.sleep(4)
+
+        print("6. Tool frame: Moving left in tool direction")
+        script = """
+current_pose = get_actual_tcp_pose()
+target_pose = pose_trans(current_pose, p[0, 0.05, 0, 0, 0, 0])
+movel(target_pose, a=0.5, v=0.05)
+"""
+        robot.send_script(script)
+        time.sleep(4)
+
+        print("7. Tool frame: Moving down in tool direction")
+        script = """
+current_pose = get_actual_tcp_pose()
+target_pose = pose_trans(current_pose, p[0, 0, 0.03, 0, 0, 0])
+movel(target_pose, a=0.5, v=0.05)
+"""
+        robot.send_script(script)
+        time.sleep(4)
+
+        # Return to home
+        print("\nReturning to home position")
+        robot.move_joint(home_joints, velocity=0.5)
+        time.sleep(5)
+
+        print("Coordinate frames demo complete!")
+
+    finally:
+        robot.disconnect()
 
 
-def exercise_3_speed_profiles():
-    """Exercise 3: Speed and acceleration profiles"""
-    print("Exercise 3: Speed Profiles")
-    # TODO: Execute same movement with different speed/acceleration
-    # Log and compare execution times
-    pass
+def demo_speed_profiles():
+    """Different speed and acceleration profiles"""
+    print("\nSpeed Profiles")
+
+    config = URConfig(robot_ip="192.168.1.101")
+    robot = SafeURRobot(config)
+
+    if not robot.connect():
+        return
+
+    try:
+        # Home position
+        home_joints = [(159.73*pi/180), -102.5*pi/180, -100*pi/180, 296*pi/180, -260*pi/180, 35*pi/180]
+
+        print("Moving to home position...")
+        robot.move_joint(home_joints, velocity=0.5)
+        time.sleep(5)
+
+        # Define start and end positions in safe workspace
+        start_pose = [-0.925, 0.518, 0.341, 2.976, 0.952, 0.016]
+        end_pose = [-1.051, 0.35, 0.341, 2.976, 0.952, 0.016]
+
+        print("\nExecuting same movement with different speeds...\n")
+
+        # Profile 1: Slow and smooth
+        print("1. SLOW profile (v=0.05 m/s, a=0.3 m/s²)")
+        robot.move_linear(start_pose, velocity=0.1)
+        time.sleep(4)
+
+        start_time = time.time()
+        robot.move_linear(end_pose, velocity=0.05, acceleration=0.3)
+        time.sleep(6)
+        duration_1 = time.time() - start_time
+        print(f"   Duration: {duration_1:.2f}s")
+
+        # Return to start
+        robot.move_linear(start_pose, velocity=0.1)
+        time.sleep(4)
+
+        # Profile 2: Medium speed
+        print("\n2. MEDIUM profile (v=0.1 m/s, a=0.5 m/s²)")
+        start_time = time.time()
+        robot.move_linear(end_pose, velocity=0.1, acceleration=0.5)
+        time.sleep(4)
+        duration_2 = time.time() - start_time
+        print(f"   Duration: {duration_2:.2f}s")
+
+        # Return to start
+        robot.move_linear(start_pose, velocity=0.1)
+        time.sleep(4)
+
+        # Profile 3: Fast
+        print("\n3. FAST profile (v=0.15 m/s, a=0.8 m/s²)")
+        start_time = time.time()
+        robot.move_linear(end_pose, velocity=0.15, acceleration=0.8)
+        time.sleep(3)
+        duration_3 = time.time() - start_time
+        print(f"   Duration: {duration_3:.2f}s")
+
+        print("\nSpeed Profile Summary")
+        print(f"Slow:   {duration_1:.2f}s")
+        print(f"Medium: {duration_2:.2f}s")
+        print(f"Fast:   {duration_3:.2f}s")
+
+        # Return to home
+        print("\nReturning to home position")
+        robot.move_joint(home_joints, velocity=0.5)
+        time.sleep(5)
+
+        print("Speed profiles demo complete!")
+
+    finally:
+        robot.disconnect()
+
+
+def demo_spiral_search():
+    """Spiral search pattern for object location"""
+    print("\nSpiral Search Pattern Demo")
+
+    config = URConfig(robot_ip="192.168.1.101")
+    robot = SafeURRobot(config)
+
+    if not robot.connect():
+        return
+
+    try:
+        # Home position
+        home_joints = [(159.73*pi/180), -102.5*pi/180, -100*pi/180, 296*pi/180, -260*pi/180, 35*pi/180]
+
+        print("Moving to home position...")
+        robot.move_joint(home_joints, velocity=0.5)
+        time.sleep(5)
+
+        # Spiral parameters in safe workspace
+        center_x = -0.988
+        center_y = 0.434
+        z_height = 0.341
+        max_radius = 0.06
+        num_spirals = 3
+        points_per_spiral = 16
+
+        # Orientation
+        rx, ry, rz = 2.976, 0.952, 0.016
+
+        print("Executing spiral search pattern...")
+
+        # Generate spiral points
+        total_points = num_spirals * points_per_spiral
+
+        for i in range(total_points):
+            angle = i * 2 * np.pi / points_per_spiral
+            radius = max_radius * i / total_points
+
+            x = center_x + radius * np.cos(angle)
+            y = center_y + radius * np.sin(angle)
+
+            pose = [x, y, z_height, rx, ry, rz]
+
+            print(f"  Point {i+1}/{total_points}")
+            robot.move_linear(pose, velocity=0.1, acceleration=0.5)
+            time.sleep(1)
+
+        print("Spiral search complete!")
+
+        # Return to home
+        print("Returning to home")
+        robot.move_joint(home_joints, velocity=0.5)
+        time.sleep(5)
+
+    finally:
+        robot.disconnect()
+
+
+def demo_gripper_test():
+    """Simple gripper open/close test using pyRobotiqGripper"""
+    print("\nGripper Test Demo (pyRobotiqGripper)")
+
+    config = URConfig(robot_ip="192.168.1.101")
+    robot = SafeURRobot(config)
+
+    # Connect without auto gripper activation to troubleshoot
+    if not robot.connect(activate_gripper=False, power_on_robot=False):
+        print("Failed to connect to robot")
+        return
+
+    # Manually try gripper connection
+    if not robot.gripper_connected:
+        print("\nGripper was not auto-connected. Trying manual connection...")
+        try:
+            if ROBOTIQ_AVAILABLE:
+                robot.gripper = RobotiqGripper()
+                robot.gripper.activate()
+                robot.gripper_connected = True
+                print("Gripper manually connected and activated!")
+            else:
+                print("ERROR: pyRobotiqGripper not installed!")
+                print("Install with: pip install minimalmodbus pyRobotiqGripper")
+                robot.disconnect()
+                return
+        except Exception as e:
+            print(f"Manual gripper connection failed: {e}")
+            print("\nTroubleshooting:")
+            print("  1. Ensure gripper is powered on")
+            print("  2. Check USB/serial connection to gripper")
+            print("  3. Verify gripper serial port (may need to specify manually)")
+            print("  4. On Windows, check Device Manager for COM port")
+            print("  5. On Linux, check /dev/ttyUSB* or /dev/ttyACM*")
+            robot.disconnect()
+            return
+
+    try:
+        print("\nThis demo will test gripper open and close functionality")
+        print("Watch the gripper during this test.\n")
+
+        # Test 1: Open gripper
+        print("Test 1: Opening gripper...")
+        robot.rq_open_gripper()
+        time.sleep(2)
+        pos = robot.get_gripper_position()
+        print(f"Gripper position: {pos} (0=fully open, 255=fully closed)")
+        time.sleep(1)
+
+        # Test 2: Close gripper
+        print("\nTest 2: Closing gripper fully...")
+        robot.rq_close_gripper(position=255)
+        time.sleep(2)
+        pos = robot.get_gripper_position()
+        print(f"Gripper position: {pos}")
+        time.sleep(1)
+
+        # Test 3: Half open
+        print("\nTest 3: Moving to half-open position (128)...")
+        robot.gripper_move_to(128)
+        time.sleep(2)
+        pos = robot.get_gripper_position()
+        print(f"Gripper position: {pos}")
+        time.sleep(1)
+
+        # Test 4: Quarter positions
+        print("\nTest 4: Testing quarter positions...")
+        for target in [64, 128, 192, 255, 0]:
+            print(f"  Moving to position {target}...")
+            robot.gripper_move_to(target)
+            time.sleep(1.5)
+            pos = robot.get_gripper_position()
+            print(f"    Actual position: {pos}")
+
+        # Test 5: Multiple cycles
+        print("\nTest 5: Running 3 open/close cycles...")
+        for i in range(3):
+            print(f"  Cycle {i+1}/3: Opening...")
+            robot.rq_open_gripper()
+            time.sleep(1)
+
+            print(f"  Cycle {i+1}/3: Closing...")
+            robot.rq_close_gripper()
+            time.sleep(1)
+
+        # Test 6: Object detection test
+        print("\nTest 6: Object detection test...")
+        print("Place an object in the gripper and it will attempt to grip...")
+        time.sleep(3)
+        robot.rq_open_gripper()
+        time.sleep(2)
+        print("Closing gripper...")
+        robot.rq_close_gripper()
+        time.sleep(2)
+        detected = robot.rq_check_object_detected()
+        pos = robot.get_gripper_position()
+        print(f"Object detected: {detected}")
+        print(f"Final position: {pos}")
+
+        print("\nGripper Test Complete")
+        if robot.gripper_connected:
+            print("Gripper is working correctly with pyRobotiqGripper!")
+        else:
+            print("Gripper connection issues")
+
+        # Leave gripper open
+        print("\nLeaving gripper in open position...")
+        robot.rq_open_gripper()
+        time.sleep(1)
+
+    finally:
+        robot.disconnect()
+
+
+def demo_trick():
+    """Mystery trick"""
+    print("\Mystery Trick")
+
+    config = URConfig(robot_ip="192.168.1.101")
+    robot = SafeURRobot(config)
+
+    if not robot.connect():
+        return
+
+    try:
+        # Home position
+        home_joints = [(159.73*pi/180), -102.5*pi/180, -100*pi/180, 296*pi/180, -260*pi/180, 35*pi/180]
+
+        print("Moving to home position...")
+        robot.move_joint(home_joints, velocity=0.5)
+        time.sleep(5)
+
+        # Trick pickup position
+        trick_pose = [-0.781, 0.505, -0.128, 0.478, 2.292, 1.728]
+        above_trick = [-0.781, 0.505, -0.05, 0.478, 2.292, 1.728]
+
+        # Dropoff position (from pick and place)
+        dropoff_pose = [-0.413, 0.654, -0.12, 2.191, 2.249, 0.1]
+        above_dropoff = [-0.413, 0.654, -0.05, 2.191, 2.249, 0.1]
+
+        print("\nAttempting to grab object...")
+        robot.show_popup("Hand me the object! Trying 5 times...")
+
+        object_grabbed = False
+
+        # Try 5 times to grab the object
+        for attempt in range(1, 6):
+            print(f"\nAttempt {attempt}/5")
+
+            # Move to above position
+            print(f"Moving to grab position")
+            robot.move_linear(above_trick, velocity=0.1)
+            time.sleep(3)
+
+            # Move down
+            robot.move_linear(trick_pose, velocity=0.05)
+            time.sleep(3)
+
+            # Open gripper
+            robot.rq_open_gripper(speed=80)
+            time.sleep(2)
+
+            # Close gripper slowly
+            print(f"Closing gripper (attempt {attempt})...")
+            robot.rq_close_gripper(force=80, speed=50)
+            time.sleep(3)
+
+            # Check if object detected
+            if robot.rq_check_object_detected():
+                print(f"Object grabbed on attempt {attempt}!")
+                robot.show_popup(f"Got it on attempt {attempt}! Watch this!")
+                object_grabbed = True
+                time.sleep(2)
+                break
+            else:
+                print(f"No object detected...")
+                robot.rq_open_gripper()
+                time.sleep(1)
+                robot.move_linear(above_trick, velocity=0.1)
+                time.sleep(2)
+
+        if not object_grabbed:
+            print("\nNo object after 5 attempts. Giving up!")
+            robot.show_popup("No object found after 5 tries. Maybe next time!", warning=True)
+            time.sleep(3)
+
+            # Return to home
+            print("Returning to home")
+            robot.move_joint(home_joints, velocity=0.5)
+            time.sleep(5)
+        else:
+            # Perform maneuver!
+            print("\nPerforming maneuver!")
+
+            # Move up with pencil
+            robot.move_linear(above_trick, velocity=0.1)
+            time.sleep(3)
+
+            # Go to home position
+            print("Moving to starting position...")
+            robot.move_joint(home_joints, velocity=0.5)
+            time.sleep(5)
+
+            # Maneuver: fluid figure-8 motion with wrist flips
+            print("Executing moves...")
+
+            # Build URScript for smooth nunchuck motion
+            num_points = 20
+            script = """
+def nunchuck_maneuver():
+    """
+
+            # Generate figure-8 trajectory with rapid wrist movements
+            for i in range(num_points):
+                t = i / num_points
+                angle = t * 4 * np.pi  # Two full loops
+
+                # Figure-8 pattern
+                x = -0.6 + 0.15 * np.sin(angle)
+                y = 0.5 + 0.12 * np.sin(2 * angle)
+                z = 0.2 + 0.1 * np.sin(3 * angle)
+
+                # Rapid wrist rotations for nunchuck effect
+                rx = 2.5 + 0.8 * np.sin(angle * 3)
+                ry = 1.5 + 0.6 * np.cos(angle * 2)
+                rz = 0.5 + angle * 0.5  # Continuous spin
+
+                pose_str = f"p[{x}, {y}, {z}, {rx}, {ry}, {rz}]"
+
+                # Use blend radius for smooth continuous motion
+                if i < num_points - 1:
+                    script += f"\n    movel({pose_str}, a=1.2, v=0.3, r=0.015)"
+                else:
+                    script += f"\n    movel({pose_str}, a=1.2, v=0.3)"
+
+            script += """
+end
+nunchuck_maneuver()
+"""
+
+            robot.send_script(script)
+            time.sleep(15)  # Wait for maneuver to complete
+
+            print("Maneuver complete!")
+            robot.show_popup("COMPLETE")
+            time.sleep(2)
+
+            # Now drop the object at the dropoff location
+            print("\nDropping object at designated location...")
+
+            # Move to dropoff
+            print("Moving to dropoff position")
+            robot.move_linear(above_dropoff, velocity=0.15)
+            time.sleep(4)
+
+            # Move down
+            robot.move_linear(dropoff_pose, velocity=0.05)
+            time.sleep(3)
+
+            # Release object
+            print("Releasing object")
+            robot.rq_open_gripper()
+            time.sleep(2)
+
+            # Move up
+            robot.move_linear(above_dropoff, velocity=0.1)
+            time.sleep(3)
+
+            print("Object returned!")
+
+            # Return to home
+            print("Returning to home")
+            robot.move_joint(home_joints, velocity=0.5)
+            time.sleep(5)
+
+    finally:
+        robot.disconnect()
 
 
 # Main Entry
 
 if __name__ == "__main__":
     print("UR Robot Control: TCP/IP & URScript")
-    
+
     print("Ensure robot area is clear and emergency stop is ready.\n")
-    
+
     while True:
         print("Select demo to run:")
         print("1. Basic movement patterns")
-        print("2. Pick and place sequence")
-        print("3. Trajectory execution")
-        print("4. Exercise 1: Joint control")
-        print("5. Exercise 2: Coordinate frames")
-        print("6. Exercise 3: Speed profiles")
+        print("2. Smart pick and place")
+        print("3. Spinning top trajectory")
+        print("4. Individual joint control")
+        print("5. Coordinate frames (base vs tool)")
+        print("6. Speed profiles comparison")
+        print("7. Spiral search pattern")
+        print("8. Mystery")
+        print("9. Gripper test (RECOMMENDED if gripper issues)")
         print("0. Exit")
-        
+
         choice = input("\nEnter choice: ")
-        
+
         if choice == "1":
             demo_basic_movement()
         elif choice == "2":
@@ -617,14 +1588,20 @@ if __name__ == "__main__":
         elif choice == "3":
             demo_trajectory_execution()
         elif choice == "4":
-            exercise_1_joint_control()
+            demo_individual_joint_control()
         elif choice == "5":
-            exercise_2_coordinate_frames()
+            demo_coordinate_frames()
         elif choice == "6":
-            exercise_3_speed_profiles()
+            demo_speed_profiles()
+        elif choice == "7":
+            demo_spiral_search()
+        elif choice == "8":
+            demo_trick()
+        elif choice == "9":
+            demo_gripper_test()
         elif choice == "0":
             break
         else:
             print("Invalid choice!")
-    
+
     print("\nGoodbye")
