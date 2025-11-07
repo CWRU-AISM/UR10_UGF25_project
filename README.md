@@ -11,7 +11,8 @@ UR10_UGF25_project/
 │   │   ├── azure_kinect.py      # Azure Kinect DK with pyk4a & viewer
 │   │   ├── cv_basics.py         # Basic CV with Azure Kinect
 │   │   ├── cv_scripts.py        # Advanced CV algorithms
-│   │   └── kinect_scripts.py    # Advanced depth processing
+│   │   ├── kinect_scripts.py    # Advanced depth processing
+│   │   └── nerf_studio.py       # NeRF Studio integration
 │   └── robot_control/           # Direct robot control (non-ROS)
 │       ├── ur10_control.py      # Legacy control scripts
 │       └── ur10_socket.py       # Low-level socket communication
@@ -22,7 +23,8 @@ UR10_UGF25_project/
 │       └── scripts/             # Motion planning examples
 └── examples/                    # Reference code and templates
     ├── urx_examples/            # Legacy URX library examples
-    └── ur_templates/            # UR script templates
+    ├── ur_templates/            # UR script templates
+    └── nerf_examples/           # NeRF Studio workflow examples
 ```
 
 ## Prerequisites
@@ -31,6 +33,9 @@ UR10_UGF25_project/
 ```bash
 # Python dependencies
 pip install numpy opencv-python pyk4a open3d scipy scikit-image matplotlib
+
+# NeRF Studio (for 3D reconstruction)
+pip install nerfstudio nerfacc
 
 # For ROS2 users (Control group)
 sudo apt install ros-humble-ur-robot-driver
@@ -191,6 +196,80 @@ Features:
 - Plane fitting with RANSAC
 - Object segmentation on tables
 - Motion tracking and gesture detection
+
+## Neural Radiance Fields (NeRF)
+
+**File:** `src/perception/nerf_studio.py`
+
+Integration with NeRF Studio for photo-realistic 3D reconstruction from multi-view images.
+
+### Quick Start
+
+**Manual capture:**
+```bash
+python examples/nerf_examples/basic_nerf_workflow.py
+```
+
+**Train NeRF:**
+```bash
+python examples/nerf_examples/train_nerf_workflow.py data/nerf_basic
+```
+
+**View results:**
+```bash
+ns-viewer --load-config outputs/nerfacto_*/config.yml
+```
+
+### Programmatic Usage
+
+**Capture dataset:**
+```python
+from src.perception.nerf_studio import NeRFDataCapture
+
+capture = NeRFDataCapture(output_dir="data/my_scene")
+capture.connect_kinect()
+
+# Capture 100 images with 0.5s interval
+capture.capture_dataset(num_images=100, interval=0.5)
+
+# Save camera transforms
+capture.save_transforms()
+capture.disconnect()
+```
+
+**Train model:**
+```python
+from src.perception.nerf_studio import NeRFTrainer
+
+trainer = NeRFTrainer(data_dir="data/my_scene")
+trainer.train(method="nerfacto", max_num_iterations=30000)
+```
+
+**Automated capture with robot:**
+```python
+from src.perception.nerf_studio import RobotNeRFCapture
+
+robot_capture = RobotNeRFCapture(output_dir="data/robot_scene")
+robot_capture.connect(robot_ip="192.168.1.101")
+
+# Capture hemisphere around object at (0.4, 0.3, 0.2)
+robot_capture.capture_hemisphere(
+    center_point=(0.4, 0.3, 0.2),
+    radius=0.5,
+    num_views=36
+)
+
+robot_capture.disconnect()
+```
+
+### Available Methods
+
+- `nerfacto` - Default, balanced quality and speed
+- `instant-ngp` - Fast training, requires CUDA
+- `tensorf` - High quality reconstruction
+- `mipnerf` - Better fine details with anti-aliasing
+
+See `examples/nerf_examples/README.md` for detailed workflows and best practices.
 
 ## Robot Control Track
 
@@ -364,6 +443,7 @@ T_camera_to_base = calib.calibrate(robot_poses, images)
 - Use `cv_basics.py` for learning fundamentals
 - Use `cv_scripts.py` for project implementation
 - Use `kinect_scripts.py` for advanced depth processing
+- Use `nerf_studio.py` for 3D reconstruction with NeRF
 - Test with both live camera and saved images
 
 ### For Control Group
@@ -380,6 +460,7 @@ T_camera_to_base = calib.calibrate(robot_poses, images)
 - [Azure Kinect DK Docs](https://docs.microsoft.com/en-us/azure/kinect-dk/)
 - [OpenCV Tutorials](https://docs.opencv.org/4.x/d9/df8/tutorial_root.html)
 - [Open3D Documentation](http://www.open3d.org/docs/release/)
+- [NeRF Studio Documentation](https://docs.nerf.studio/)
 
 ### Libraries
 - pyk4a: Azure Kinect Python wrapper
@@ -387,6 +468,7 @@ T_camera_to_base = calib.calibrate(robot_poses, images)
 - Open3D: 3D data processing
 - MoveIt2: Robot motion planning
 - OMPL: Motion planning library
+- NeRF Studio: Neural radiance field training and rendering
 
 ## Safety Guidelines
 
