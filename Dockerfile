@@ -7,8 +7,8 @@
 # - Adjust PyTorch installation URL below to match CUDA version
 
 # Base stage with Python and common dependencies
-FROM ubuntu:22.04 AS base
-# Alternative GPU base: FROM nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04 AS base
+# FROM ubuntu:22.04 AS base
+FROM nvidia/cuda:12.6.0-cudnn-devel-ubuntu22.04 AS base
 
 # Prevent interactive prompts during build
 ENV DEBIAN_FRONTEND=noninteractive
@@ -64,22 +64,21 @@ COPY requirements.txt /workspace/
 # Install Python packages from requirements.txt
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Install PyTorch with CUDA support (adjust for your GPU/CPU setup)
-# For CPU-only: torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-# For CUDA 11.8: torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-# For CUDA 12.1: torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Install PyTorch with CUDA support 
 RUN pip3 install --no-cache-dir \
-    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
 # Install Segment Anything Model 2 (SAM2) from GitHub
-RUN pip3 install --no-cache-dir git+https://github.com/facebookresearch/segment-anything-2.git
+# Commented out for now - uncomment when needed
+# RUN pip3 install --no-cache-dir git+https://github.com/facebookresearch/segment-anything-2.git
 
 # Install Grounded DINO dependencies and model
-RUN apt-get update && apt-get install -y \
-    ninja-build \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip3 install --no-cache-dir git+https://github.com/IDEA-Research/GroundingDINO.git
+# Commented out for now - uncomment when needed
+# RUN apt-get update && apt-get install -y \
+#     ninja-build \
+#     && rm -rf /var/lib/apt/lists/*
+#
+# RUN pip3 install --no-cache-dir git+https://github.com/IDEA-Research/GroundingDINO.git
 
 # Install COLMAP (for SfM)
 RUN apt-get update && apt-get install -y \

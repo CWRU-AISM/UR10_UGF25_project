@@ -45,7 +45,13 @@ qtcreator-*
 /planning/src
 /CLAUDE.md
 *~
-
+/colmap/*
+/camera_paths/*
+/exports/*
+/images
+/renders/*
+/videos/*
+/outputs
 # Emacs
 .#*
 

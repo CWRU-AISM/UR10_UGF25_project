@@ -1,5 +1,4 @@
 # Joint limits configuration for UR10e robot
-# Students can modify these limits for safety or specific applications
 
 joint_limits:
   # Shoulder Pan Joint
