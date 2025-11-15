@@ -1,10 +1,6 @@
-# Dockerfile for Undergraduate Research Project
-# ROS2 should be installed natively on the host system
-#
-# GPU Support Options:
-# - For NVIDIA GPU support, use: nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04
-# - For CPU-only, use: ubuntu:22.04 (current)
-# - Adjust PyTorch installation URL below to match CUDA version
+# Dockerfile for UR10e Research Project
+# Supports Computer Vision and NeRF Studio workflows
+# Includes CUDA 12.6, COLMAP, and all CV dependencies
 
 # Base stage with Python and common dependencies
 # FROM ubuntu:22.04 AS base
@@ -32,10 +28,12 @@ RUN apt-get update && apt-get install -y \
     # OpenCV dependencies
     libopencv-dev \
     python3-opencv \
-    # Azure Kinect dependencies
-    libk4a1.4 \
-    libk4a1.4-dev \
-    k4a-tools \
+    # Media processing
+    ffmpeg \
+    libavformat-dev \
+    libavcodec-dev \
+    libavutil-dev \
+    libswscale-dev \
     # OpenGL for visualization
     libgl1-mesa-glx \
     libglib2.0-0 \
@@ -64,26 +62,32 @@ COPY requirements.txt /workspace/
 # Install Python packages from requirements.txt
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Install PyTorch with CUDA support 
+# Install PyTorch with CUDA support
 RUN pip3 install --no-cache-dir \
     torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
+# Install COLMAP for Structure from Motion
+RUN apt-get update && apt-get install -y \
+    colmap \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install NeRF Studio and dependencies
+RUN pip3 install --no-cache-dir nerfstudio
+
+# Install gsplat for Gaussian Splatting
+RUN pip3 install --no-cache-dir gsplat
+
 # Install Segment Anything Model 2 (SAM2) from GitHub
-# Commented out for now - uncomment when needed
+# Uncomment when needed
 # RUN pip3 install --no-cache-dir git+https://github.com/facebookresearch/segment-anything-2.git
 
 # Install Grounded DINO dependencies and model
-# Commented out for now - uncomment when needed
+# Uncomment when needed
 # RUN apt-get update && apt-get install -y \
 #     ninja-build \
 #     && rm -rf /var/lib/apt/lists/*
 #
 # RUN pip3 install --no-cache-dir git+https://github.com/IDEA-Research/GroundingDINO.git
-
-# Install COLMAP (for SfM)
-RUN apt-get update && apt-get install -y \
-    colmap \
-    && rm -rf /var/lib/apt/lists/*
 
 # Main development stage
 FROM base AS development
@@ -102,7 +106,7 @@ RUN apt-get update && apt-get install -y \
     graphviz \
     && rm -rf /var/lib/apt/lists/*
 
-# Additional CV-specific tools
+# Additional CV and 3D processing tools
 RUN pip3 install --no-cache-dir \
     pyrealsense2 \
     trimesh \
@@ -110,6 +114,10 @@ RUN pip3 install --no-cache-dir \
     ipdb \
     jupyter-console \
     nbconvert
+
+# Note: Azure Kinect SDK (pyk4a) should be installed on the host system
+# Docker container access to USB devices can be unreliable
+# For Azure Kinect usage, install natively with conda as described in README
 
 # Set environment for development
 ENV PYTHONPATH=/workspace/src:$PYTHONPATH

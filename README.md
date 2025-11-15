@@ -12,14 +12,7 @@ UR10_UGF25_project/
 │   │   ├── cv_basics.py         # Basic CV with Azure Kinect
 │   │   ├── cv_scripts.py        # Advanced CV algorithms
 │   │   └── kinect_scripts.py    # Advanced depth processing
-│   └── robot_control/           # Direct robot control (non-ROS)
-│       ├── ur10_control.py      # Legacy control scripts
-│       └── ur10_socket.py       # Low-level socket communication
-├── ros2_ws/src/                 # ROS2 workspace
-│   └── ur10_control/            # MoveIt2 motion planning package
-│       ├── launch/              # ROS2 launch files
-│       ├── config/              # Controller configurations
-│       └── scripts/             # Motion planning examples
+│   └── control/                 # Robot control scripts
 └── examples/                    # Reference code and templates
     ├── urx_examples/            # Legacy URX library examples
     └── ur_templates/            # UR script templates
@@ -27,18 +20,25 @@ UR10_UGF25_project/
 
 ## Prerequisites
 
-### Core Dependencies
-```bash
-# Python dependencies
-pip install numpy opencv-python pyk4a open3d scipy scikit-image matplotlib
+### Conda Environment Setup
 
-# For ROS2 users (Control group)
-sudo apt install ros-humble-ur-robot-driver
-sudo apt install ros-humble-moveit
-sudo apt install ros-humble-moveit-planners-ompl
+Create and activate a conda environment for perception work:
+
+```bash
+conda create -n ur10_perception python=3.10
+conda activate ur10_perception
+```
+
+### Core Dependencies
+
+Install Python dependencies:
+
+```bash
+pip install numpy opencv-python pyk4a open3d scipy scikit-image matplotlib
 ```
 
 ### Azure Kinect Setup
+
 Install the Azure Kinect SDK:
 - Windows: https://github.com/microsoft/Azure-Kinect-Sensor-SDK/releases
 - Linux: Follow pyk4a installation guide
@@ -192,59 +192,55 @@ Features:
 - Object segmentation on tables
 - Motion tracking and gesture detection
 
-## Robot Control Track
+### 3D Reconstruction with NeRF Studio
 
-### Direct Control (Non-ROS)
+For neural radiance fields and 3D reconstruction tasks, this repository supports NeRF Studio workflows.
 
-**File:** `src/robot_control/ur10_controller.py`
+**Setup:**
 
-For students not using ROS2:
+Install NeRF Studio and dependencies in your conda environment:
 
-```python
-from src.robot_control.ur10_controller import UR10Controller, RobotConfig
-
-# Configure robot
-config = RobotConfig(
-    robot_ip="192.168.1.101",
-    max_velocity=1.0,
-    max_acceleration=1.0
-)
-
-robot = UR10Controller(config)
-robot.connect()
-
-# Joint space motion
-robot.move_joints([0, -1.57, 1.57, -1.57, -1.57, 0])
-
-# Cartesian space motion
-robot.move_linear([0.4, 0.3, 0.2, 0, 3.14, 0])
-
-robot.disconnect()
-```
-
-### ROS2 Control with MoveIt2
-
-**Build workspace:**
 ```bash
-cd ros2_ws
-colcon build --packages-select ur10_control
-source install/setup.bash
+conda activate ur10_perception
+
+pip install nerfstudio
+pip install gsplat
 ```
 
-**Launch MoveIt2 demo:**
+**COLMAP for Structure from Motion:**
+
+COLMAP is used to process images and generate camera poses for NeRF training.
+
+1. Capture images with the Azure Kinect or use existing image sequences
+2. Process images with COLMAP (see [colmap.md](colmap.md) for detailed instructions)
+3. Train NeRF models using the processed data
+
+**Basic workflow:**
+
 ```bash
-ros2 launch ur10_control ur10_moveit_demo.launch.py
+ns-process-data images --data /path/to/images --output-dir /path/to/output
+
+ns-train nerfacto --data /path/to/output
 ```
 
-**Motion planning examples:**
-```python
-# See: ros2_ws/src/ur10_control/scripts/motion_planning_example.py
+For detailed COLMAP usage and advanced workflows, refer to [colmap.md](colmap.md).
+
+## Robot Control
+
+### Setup
+
+Clone the UR10e Robotiq control repository:
+
+```bash
+git clone https://github.com/bryceag11/UR10e_Robotiq.git
+cd UR10e_Robotiq
 ```
 
-Available planners:
-- OMPL (default): RRT, PRM, EST, KPIECE
-- Pilz Industrial Motion: Linear, circular paths
-- TrajOpt (optional): Trajectory optimization
+Follow the instructions in that repository for setting up ROS2 control with the UR10e robot and Robotiq gripper.
+
+### Control Scripts
+
+The `src/control/` directory contains utility scripts for direct robot control and integration with the perception pipeline.
 
 ## Development Workflow
 
@@ -275,36 +271,20 @@ python src/perception/cv_scripts.py
 
 ### Testing Robot Control
 
-**Safety checklist:**
-1. Verify robot IP address
-2. Ensure emergency stop is accessible
-3. Clear workspace of obstacles
-4. Start with low velocities (0.1-0.3 m/s)
-5. Test in simulation first if available
-
-**Connection test:**
-```bash
-# Ping robot
-ping 192.168.1.101
-
-# Test control script
-python -c "from src.robot_control.ur10_controller import UR10Controller; print('Import successful')"
-```
+For robot control setup and testing, refer to the [UR10e_Robotiq repository](https://github.com/bryceag11/UR10e_Robotiq).
 
 ## Docker Environment
 
-Docker is provided for Computer Vision dependencies only. ROS2 should be installed natively.
+Docker is provided for Computer Vision and NeRF Studio dependencies. The Docker image includes CUDA support, COLMAP, and all necessary packages for 3D reconstruction workflows.
 
 ```bash
 # Build container
-docker-compose up ur10e-dev
-
-# Or build specific image
 docker build -t ur10e-dev .
 
-# Run with display support (Linux)
+# Run with GPU support and display (Linux)
 xhost +local:docker
 docker run -it --rm \
+  --gpus all \
   --net=host \
   --privileged \
   -e DISPLAY=$DISPLAY \
@@ -312,6 +292,8 @@ docker run -it --rm \
   -v $(pwd):/workspace \
   ur10e-dev
 ```
+
+Note: For native installation, use conda as described in the Prerequisites section.
 
 ## Common Issues
 
@@ -359,34 +341,36 @@ T_camera_to_base = calib.calibrate(robot_poses, images)
 
 ## Project Organization
 
-### For CV Group
+### For Perception
 - Work in `src/perception/`
 - Use `cv_basics.py` for learning fundamentals
 - Use `cv_scripts.py` for project implementation
 - Use `kinect_scripts.py` for advanced depth processing
 - Test with both live camera and saved images
+- Use conda environment for package management
+- Use NeRF Studio for 3D reconstruction tasks
 
-### For Control Group
-- Work in `ros2_ws/src/ur10_control/`
-- Use MoveIt2 for motion planning
-- Explore different planners (OMPL, Pilz, TrajOpt)
-- Test in RViz before running on hardware
+### For Control
+- Clone and work in the [UR10e_Robotiq repository](https://github.com/bryceag11/UR10e_Robotiq)
+- Use `src/control/` for integration scripts
 
 ## Resources
 
 ### Documentation
 - [UR10e Manual](https://www.universal-robots.com/download/)
-- [MoveIt2 Tutorials](https://moveit.picknik.ai/main/index.html)
 - [Azure Kinect DK Docs](https://docs.microsoft.com/en-us/azure/kinect-dk/)
 - [OpenCV Tutorials](https://docs.opencv.org/4.x/d9/df8/tutorial_root.html)
 - [Open3D Documentation](http://www.open3d.org/docs/release/)
+- [NeRF Studio Documentation](https://docs.nerf.studio/)
+- [COLMAP Documentation](https://colmap.github.io/)
 
 ### Libraries
 - pyk4a: Azure Kinect Python wrapper
 - OpenCV: Computer vision algorithms
 - Open3D: 3D data processing
-- MoveIt2: Robot motion planning
-- OMPL: Motion planning library
+- NeRF Studio: Neural radiance fields framework
+- COLMAP: Structure from motion
+- gsplat: Gaussian splatting
 
 ## Safety Guidelines
 
@@ -394,7 +378,7 @@ T_camera_to_base = calib.calibrate(robot_poses, images)
 2. Never exceed safety-rated velocities
 3. Keep emergency stop accessible
 4. Clear workspace before motion
-5. Test new code in simulation first (try to)
+5. Test new code in simulation first when possible
 
 ## Contributing
 

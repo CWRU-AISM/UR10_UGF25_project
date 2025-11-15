@@ -45,15 +45,11 @@ qtcreator-*
 /planning/src
 /CLAUDE.md
 *~
-/colmap/*
-/camera_paths/*
-/exports/*
+colmap.md
 /images
-/renders/*
-/videos/*
-/outputs
+colmap/
+outputs/
 # Emacs
 .#*
-
 # Catkin custom files
 CATKIN_IGNORE
