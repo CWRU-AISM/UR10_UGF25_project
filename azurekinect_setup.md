@@ -30,7 +30,16 @@ wget https://packages.microsoft.com/ubuntu/18.04/prod/pool/main/libk/libk4a1.4-d
 wget https://packages.microsoft.com/ubuntu/18.04/prod/pool/main/k/k4a-tools/k4a-tools_1.4.1_amd64.deb
 ```
 
-### 2. Install the packages
+### 2. Install missing dependency (libsoundio1)
+
+**Important:** `k4a-tools` requires `libsoundio1` which is not available in Ubuntu 24.04. Download and install it from Ubuntu 20.04 repositories:
+
+```bash
+wget http://archive.ubuntu.com/ubuntu/pool/universe/libs/libsoundio/libsoundio1_1.1.0-1_amd64.deb
+sudo apt install ./libsoundio1_1.1.0-1_amd64.deb
+```
+
+### 3. Install the Azure Kinect packages
 
 ```bash
 sudo apt install ./libk4a1.4_1.4.1_amd64.deb
@@ -38,7 +47,7 @@ sudo apt install ./libk4a1.4-dev_1.4.1_amd64.deb
 sudo apt install ./k4a-tools_1.4.1_amd64.deb
 ```
 
-### 3. Configure udev rules for non-root access
+### 4. Configure udev rules for non-root access
 
 Create the udev rules file to allow accessing the camera without root privileges:
 
@@ -62,14 +71,14 @@ LABEL="k4a_logic_rules_end"
 EOF
 ```
 
-### 4. Reload udev rules
+### 5. Reload udev rules
 
 ```bash
 sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
 
-### 5. Reconnect the Azure Kinect device
+### 6. Reconnect the Azure Kinect device
 
 Unplug and replug the Azure Kinect for the new udev rules to take effect.
 
